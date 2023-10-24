@@ -60,9 +60,12 @@ export function trackCumulativeLayoutShift(
   const window = slidingSessionWindow()
   let selectorComputationTelemetrySent = false
   const { unsubscribe: stop } = lifeCycle.subscribe(LifeCycleEventType.PERFORMANCE_ENTRIES_COLLECTED, (entries) => {
-    for (const entry of entries) {
+    const shiftEntries = entries.filter(
+      (e) => e.entryType === RumPerformanceEntryType.LAYOUT_SHIFT && !e.hadRecentInput
+    )
+    for (const entry of shiftEntries) {
       if (entry.entryType === RumPerformanceEntryType.LAYOUT_SHIFT && !entry.hadRecentInput) {
-        window.update(entry)
+        window.update(entry, shiftEntries.length)
 
         if (window.value() > maxClsValue) {
           maxClsValue = window.value()
@@ -79,7 +82,6 @@ export function trackCumulativeLayoutShift(
               addTelemetryDebug('CLS target selector computation time', {
                 duration: selectorComputationEnd - selectorComputationStart,
                 selector: cslTargetSelector,
-                entryCount: entries.length,
               })
               selectorComputationTelemetrySent = true
             }
@@ -110,24 +112,33 @@ function slidingSessionWindow() {
   let largestLayoutShiftTarget: HTMLElement | undefined
   let largestLayoutShiftTime: RelativeTime
   let targetUpdates: RelativeTime[] = []
+  let maxEntriesAtOnceCount = 0
+  let updateCount = 0
   return {
-    update: (entry: RumLayoutShiftTiming) => {
+    update: (entry: RumLayoutShiftTiming, entriesAtOnceCount: number) => {
       const shouldCreateNewWindow =
         startTime === undefined ||
         entry.startTime - endTime >= ONE_SECOND ||
         entry.startTime - startTime >= 5 * ONE_SECOND
+
+      maxEntriesAtOnceCount = Math.max(maxEntriesAtOnceCount, entriesAtOnceCount)
+      updateCount++
       if (shouldCreateNewWindow) {
         startTime = endTime = entry.startTime
         if (startTime !== undefined && maxTargetUpdateTelemetry) {
           maxTargetUpdateTelemetry--
-          addTelemetryDebug('CLS target updates per CLS window', {
-            dates: targetUpdates,
-            count: targetUpdates.length,
+          addTelemetryDebug('CLS window', {
+            targetUpdates,
+            targetUpdatesCount: targetUpdates.length,
+            maxEntriesAtOnceCount,
+            updateCount,
           })
         }
         value = entry.value
         largestLayoutShift = 0
         largestLayoutShiftTarget = undefined
+        maxEntriesAtOnceCount = 0
+        updateCount = 0
 
         targetUpdates = []
       } else {
