@@ -6,6 +6,8 @@ import {
   isExperimentalFeatureEnabled,
   ExperimentalFeature,
   noop,
+  addTelemetryDebug,
+  relativeNow,
 } from '@datadog/browser-core'
 import { isElementNode } from '../../../browser/htmlDomUtils'
 import type { LifeCycle } from '../../lifeCycle'
@@ -56,7 +58,7 @@ export function trackCumulativeLayoutShift(
   })
 
   const window = slidingSessionWindow()
-
+  let selectorComputationTelemetrySent = false
   const { unsubscribe: stop } = lifeCycle.subscribe(LifeCycleEventType.PERFORMANCE_ENTRIES_COLLECTED, (entries) => {
     for (const entry of entries) {
       if (entry.entryType === RumPerformanceEntryType.LAYOUT_SHIFT && !entry.hadRecentInput) {
@@ -69,7 +71,18 @@ export function trackCumulativeLayoutShift(
           let cslTargetSelector
 
           if (isExperimentalFeatureEnabled(ExperimentalFeature.WEB_VITALS_ATTRIBUTION) && clsTarget) {
+            const selectorComputationStart = relativeNow()
             cslTargetSelector = getSelectorFromElement(clsTarget, configuration.actionNameAttribute)
+            const selectorComputationEnd = relativeNow()
+
+            if (!selectorComputationTelemetrySent) {
+              addTelemetryDebug('CLS target selector computation time', {
+                duration: selectorComputationEnd - selectorComputationStart,
+                selector: cslTargetSelector,
+                entryCount: entries.length,
+              })
+              selectorComputationTelemetrySent = true
+            }
           }
 
           callback({
@@ -86,6 +99,8 @@ export function trackCumulativeLayoutShift(
   }
 }
 
+let maxTargetUpdateTelemetry = 5
+
 function slidingSessionWindow() {
   let value = 0
   let startTime: RelativeTime
@@ -94,7 +109,7 @@ function slidingSessionWindow() {
   let largestLayoutShift = 0
   let largestLayoutShiftTarget: HTMLElement | undefined
   let largestLayoutShiftTime: RelativeTime
-
+  let targetUpdates: RelativeTime[] = []
   return {
     update: (entry: RumLayoutShiftTiming) => {
       const shouldCreateNewWindow =
@@ -103,9 +118,18 @@ function slidingSessionWindow() {
         entry.startTime - startTime >= 5 * ONE_SECOND
       if (shouldCreateNewWindow) {
         startTime = endTime = entry.startTime
+        if (startTime !== undefined && maxTargetUpdateTelemetry) {
+          maxTargetUpdateTelemetry--
+          addTelemetryDebug('CLS target updates per CLS window', {
+            dates: targetUpdates,
+            count: targetUpdates.length,
+          })
+        }
         value = entry.value
         largestLayoutShift = 0
         largestLayoutShiftTarget = undefined
+
+        targetUpdates = []
       } else {
         value += entry.value
         endTime = entry.startTime
@@ -114,8 +138,8 @@ function slidingSessionWindow() {
       if (entry.value > largestLayoutShift) {
         largestLayoutShift = entry.value
         largestLayoutShiftTime = entry.startTime
-
         if (entry.sources?.length) {
+          targetUpdates.push(relativeNow())
           largestLayoutShiftTarget = find(
             entry.sources,
             (s): s is { node: HTMLElement } => !!s.node && isElementNode(s.node)
