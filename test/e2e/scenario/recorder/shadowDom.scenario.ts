@@ -339,7 +339,7 @@ function findElementsInShadowDom(node: SerializedNodeWithId, id: string) {
 }
 
 async function getNodeInsideShadowDom(hostTag: string, selector: string) {
-  const host = await $(hostTag)
+  const host = $(hostTag)
   return host.shadow$(selector)
 }
 
